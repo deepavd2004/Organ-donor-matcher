@@ -25,6 +25,7 @@ def login_required(role=None):
         def wrapper(*args, **kwargs):
             if not is_logged_in():
                 return redirect(url_for("login"))
+            # role is optional; if you do not use roles you can ignore it
             if role and session.get("role") != role:
                 flash("Unauthorized", "danger")
                 return redirect(url_for("index"))
@@ -45,14 +46,12 @@ def index():
 def register():
     msg = ""
     if request.method == "POST":
-        # field names must match your register.html form
+        # make sure these names match your register.html inputs
         name = request.form.get("full_name") or request.form.get("name")
         email = request.form.get("email")
-        phone = request.form.get("phone")
         password = request.form.get("password")
         confirm = request.form.get("confirm_password")
 
-        # basic validation
         if not name or not email or not password or not confirm:
             msg = "Please fill out all required fields."
             return render_template("register.html", msg=msg)
@@ -75,16 +74,14 @@ def register():
                 msg = "Account already exists with this email."
                 return render_template("register.html", msg=msg)
 
-            # hash password and insert; adjust column names if your table differs
+            # store hash in existing `password` column
             password_hash = pbkdf2_sha256.hash(password)
             cursor.execute(
-                """
-                INSERT INTO users (name, email, phone, password_hash, role)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                (name, email, phone, password_hash, "donor"),
+                "INSERT INTO users (name, email, password) VALUES (%s, %s, %s)",
+                (name, email, password_hash),
             )
             mysql.connection.commit()
+
             flash("Registered successfully. Please log in.", "success")
             return redirect(url_for("login"))
 
@@ -97,9 +94,7 @@ def register():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     """
-    Login:
-    - Tries real DB users table first.
-    - Keeps fallback demo user if DB unreachable.
+    Login using users(id, name, email, password) table.
     """
     if request.method == "POST":
         email = request.form.get("email")
@@ -112,38 +107,17 @@ def login():
         except Exception:
             user = None
 
-        # real DB login
-        if user and pbkdf2_sha256.verify(password, user["password_hash"]):
+        # verify using hash stored in `password`
+        if user and pbkdf2_sha256.verify(password, user["password"]):
             session["loggedin"] = True
-            session["user_id"] = user["user_id"]
+            session["user_id"] = user["id"]       # matches id column
             session["name"] = user["name"]
-            session["role"] = user.get("role", "donor")
-
-            try:
-                cursor.execute(
-                    "SELECT notif_id, message FROM notifications WHERE user_id=%s",
-                    (user["user_id"],),
-                )
-                notifs = cursor.fetchall()
-                for n in notifs:
-                    flash(f"Notification: {n['message']}", "info")
-                mysql.connection.commit()
-            except Exception:
-                pass
+            session["role"] = "donor"             # simple default role
 
             flash("Logged in successfully.", "success")
             return redirect(url_for("index"))
 
-        # fallback demo login (optional – you can remove this block)
-        if email == "demo@example.com" and password == "demo123":
-            session["loggedin"] = True
-            session["user_id"] = 1
-            session["name"] = "Demo User"
-            session["role"] = "donor"
-            flash("Demo login successful (no database).", "success")
-            return redirect(url_for("index"))
-
-        flash("Incorrect email/password.", "danger")
+        flash("Incorrect email or password.", "danger")
 
     return render_template("login.html")
 
@@ -160,21 +134,21 @@ def logout():
 @app.route("/donor/register", methods=["GET", "POST"])
 @login_required(role="donor")
 def donor_register():
-    flash("Donor profile editing is disabled in the online demo.", "info")
+    flash("Donor profile editing is disabled in this demo.", "info")
     return render_template("donor_register.html")
 
 
 @app.route("/donor/deactivate", methods=["POST"])
 @login_required(role="donor")
 def donor_deactivate():
-    flash("Deactivation is disabled in the online demo.", "info")
+    flash("Deactivation is disabled in this demo.", "info")
     return redirect(url_for("index"))
 
 
 @app.route("/donor/delete", methods=["POST"])
 @login_required(role="donor")
 def donor_delete_self():
-    flash("Account deletion is disabled in the online demo.", "info")
+    flash("Account deletion is disabled in this demo.", "info")
     return redirect(url_for("index"))
 
 
@@ -187,8 +161,9 @@ def donors_list():
 
     try:
         cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
-        query = """SELECT d.*, u.name, u.email, u.phone
-                   FROM donors d JOIN users u ON d.user_id = u.user_id
+        # adjust joins only if you actually have donors/users tables with these columns
+        query = """SELECT d.*, u.name, u.email
+                   FROM donors d JOIN users u ON d.user_id = u.id
                    WHERE d.availability_status='Active'"""
         params = []
         if organ:
@@ -206,23 +181,21 @@ def donors_list():
     return render_template("donors_list.html", donors=donors, organ=organ, location=location)
 
 
-# ---------------- HOSPITAL REQUESTS ----------------
+# ---------------- HOSPITAL / MATCHES (unchanged demo behaviour) ----------------
 
 @app.route("/request/new", methods=["GET", "POST"])
 @login_required(role="hospital")
 def request_new():
-    flash("Creating new requests is disabled in the online demo.", "info")
+    flash("Creating new requests is disabled in this demo.", "info")
     return render_template("request_form.html")
 
 
 @app.route("/request/<int:request_id>/delete", methods=["POST"])
 @login_required(role="hospital")
 def request_delete(request_id):
-    flash("Deleting requests is disabled in the online demo.", "info")
+    flash("Deleting requests is disabled in this demo.", "info")
     return redirect(url_for("matches_list"))
 
-
-# ---------------- MATCHING ENGINE & MATCHES ----------------
 
 def compute_match_score(req, donor, req_location=None):
     score = 0.0
@@ -260,8 +233,8 @@ def create_matches_for_request(request_id, req_location=None):
             return
 
         cursor.execute(
-            """SELECT d.*, u.email, u.user_id
-               FROM donors d JOIN users u ON d.user_id = u.user_id
+            """SELECT d.*, u.email, u.id AS user_id
+               FROM donors d JOIN users u ON d.user_id = u.id
                WHERE d.availability_status='Active'"""
         )
         donors = cursor.fetchall()
@@ -301,13 +274,13 @@ def matches_list():
     try:
         cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
 
-        if session["role"] == "hospital":
+        if session.get("role") == "hospital":
             cursor.execute(
                 """SELECT m.*, r.patient_name, r.required_organ, d.blood_type, u.name AS donor_name
                    FROM matches m
                    JOIN requests r ON m.request_id = r.request_id
                    JOIN donors d ON m.donor_id = d.donor_id
-                   JOIN users u ON d.user_id = u.user_id
+                   JOIN users u ON d.user_id = u.id
                    ORDER BY m.score DESC"""
             )
         else:
@@ -315,9 +288,9 @@ def matches_list():
                 """SELECT m.*, r.patient_name, r.required_organ, d.blood_type
                    FROM matches m
                    JOIN donors d ON m.donor_id = d.donor_id
-                   JOIN users u ON d.user_id = u.user_id
+                   JOIN users u ON d.user_id = u.id
                    JOIN requests r ON m.request_id = r.request_id
-                   WHERE u.user_id=%s
+                   WHERE u.id=%s
                    ORDER BY m.score DESC""",
                 (session["user_id"],),
             )
