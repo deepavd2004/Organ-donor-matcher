@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Matches</h2>
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th>Request ID</th>
+      <th>Patient</th>
+      <th>Organ</th>
+      <th>Donor / Blood</th>
+      <th>Score</th>
+      <th>Status</th>
+      <th>Matched At</th>
+      {% if session.get('role') == 'hospital' %}
+      <th>Actions</th>
+      {% endif %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for m in matches %}
+    <tr>
+      <td>{{ m.request_id }}</td>
+      <td>{{ m.patient_name }}</td>
+      <td>{{ m.required_organ }}</td>
+      <td>
+        {% if m.get('donor_name') %}
+          {{ m.donor_name }} ({{ m.blood_type }})
+        {% else %}
+          {{ m.blood_type }}
+        {% endif %}
+      </td>
+      <td>{{ m.score }}</td>
+      <td>{{ m.status }}</td>
+      <td>{{ m.matched_at }}</td>
+
+      {% if session.get('role') == 'hospital' %}
+      <td>
+        <form method="post"
+              action="{{ url_for('request_delete', request_id=m.request_id) }}"
+              onsubmit="return confirm('Delete this patient request after transplant?');">
+          <button class="btn btn-sm btn-outline-danger">Delete</button>
+        </form>
+      </td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h3>Notifications</h3>
+<ul class="list-group">
+  {% for n in notifications %}
+  <li class="list-group-item">
+    <strong>{{ n.type }}:</strong> {{ n.message }}
+    <span class="text-muted float-end">{{ n.sent_at }}</span>
+  </li>
+  {% else %}
+  <li class="list-group-item">No notifications.</li>
+  {% endfor %}
+</ul>
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Donors</h2>
+
+<form method="get" class="row g-2 mb-3">
+  <div class="col-md-4">
+    <input type="text" name="organ" value="{{ organ or '' }}"
+           class="form-control" placeholder="Filter by organ (e.g. Kidney)">
+  </div>
+  <div class="col-md-4">
+    <input type="text" name="location" value="{{ location or '' }}"
+           class="form-control" placeholder="Filter by location">
+  </div>
+  <div class="col-md-2">
+    <button class="btn btn-outline-primary w-100">Filter</button>
+  </div>
+</form>
+
+<table class="table table-striped">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Blood Group</th>
+      <th>Organs</th>
+      <th>Location</th>
+      <th>Contact</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for d in donors %}
+    <tr>
+      <td>{{ d.name }}</td>
+      <td>{{ d.blood_type }}</td>
+      <td>{{ d.organs }}</td>
+      <td>{{ d.location }}</td>
+      <td>{{ d.email }}<br>{{ d.phone }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

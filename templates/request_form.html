@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Submit Patient Organ Request</h2>
+<form method="post" class="mt-3">
+  <div class="mb-3">
+    <label class="form-label">Patient Name</label>
+    <input type="text" name="patient_name" class="form-control" required>
+  </div>
+
+  <div class="mb-3">
+    <label class="form-label">Required Organ</label>
+    <select name="required_organ" class="form-select" required>
+      <option>Kidney</option><option>Liver</option>
+      <option>Heart</option><option>Lung</option>
+      <option>Pancreas</option><option>Cornea</option>
+    </select>
+  </div>
+
+  <div class="mb-3">
+    <label class="form-label">Patient Blood Group</label>
+    <select name="blood_type" class="form-select" required>
+      <option>A+</option><option>A-</option>
+      <option>B+</option><option>B-</option>
+      <option>AB+</option><option>AB-</option>
+      <option>O+</option><option>O-</option>
+    </select>
+  </div>
+
+  <div class="mb-3">
+    <label class="form-label">HLA Profile</label>
+    <input type="text" name="hla_profile" class="form-control">
+  </div>
+
+  <div class="mb-3">
+    <label class="form-label">Urgency Level</label>
+    <select name="urgency_level" class="form-select" required>
+      <option>Low</option>
+      <option>Medium</option>
+      <option>High</option>
+      <option>Critical</option>
+    </select>
+  </div>
+
+  <div class="mb-3">
+    <label class="form-label">Hospital Location (for proximity)</label>
+    <input type="text" name="location" class="form-control">
+  </div>
+
+  <button class="btn btn-danger">Submit Request</button>
+</form>
+{% endblock %}

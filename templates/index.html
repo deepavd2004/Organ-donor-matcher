@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="p-4 bg-light rounded-3">
+  <h1>Organ Donor Matcher</h1>
+  <p class="lead">
+    Centralized platform to register organ donors and match them with urgent patient requests
+    using blood group, organ type, compatibility and location filters.
+  </p>
+  {% if not session.get('loggedin') %}
+    <a href="{{ url_for('register') }}" class="btn btn-primary me-2">Register</a>
+    <a href="{{ url_for('login') }}" class="btn btn-secondary">Login</a>
+  {% else %}
+    <a href="{{ url_for('matches_list') }}" class="btn btn-primary">View Matches</a>
+  {% endif %}
+</div>
+{% endblock %}
