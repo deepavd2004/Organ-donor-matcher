@@ -25,7 +25,6 @@ def login_required(role=None):
         def wrapper(*args, **kwargs):
             if not is_logged_in():
                 return redirect(url_for("login"))
-            # role is optional; if you do not use roles you can ignore it
             if role and session.get("role") != role:
                 flash("Unauthorized", "danger")
                 return redirect(url_for("index"))
@@ -44,80 +43,84 @@ def index():
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
-    msg = ""
     if request.method == "POST":
-        # make sure these names match your register.html inputs
-        name = request.form.get("full_name") or request.form.get("name")
+        name = request.form.get("name")
         email = request.form.get("email")
+        phone = request.form.get("phone")
         password = request.form.get("password")
-        confirm = request.form.get("confirm_password")
+        role = request.form.get("role")  # donor/hospital
+        consent = 1 if request.form.get("consent") == "on" else 0
 
-        if not name or not email or not password or not confirm:
-            msg = "Please fill out all required fields."
-            return render_template("register.html", msg=msg)
-
-        if password != confirm:
-            msg = "Passwords do not match."
-            return render_template("register.html", msg=msg)
+        if not name or not email or not password or role not in ["donor", "hospital"]:
+            flash("Please fill all required fields.", "danger")
+            return render_template("register.html")
 
         if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
-            msg = "Invalid email address."
-            return render_template("register.html", msg=msg)
+            flash("Invalid email.", "danger")
+            return render_template("register.html")
 
-        try:
-            cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+        cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+        cursor.execute("SELECT * FROM users WHERE email=%s", (email,))
+        account = cursor.fetchone()
+        if account:
+            flash("Account with this email already exists.", "danger")
+            return render_template("register.html")
 
-            # check if email already exists
-            cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
-            account = cursor.fetchone()
-            if account:
-                msg = "Account already exists with this email."
-                return render_template("register.html", msg=msg)
+        password_hash = pbkdf2_sha256.hash(password)
 
-            # store hash in existing `password` column
-            password_hash = pbkdf2_sha256.hash(password)
+        cursor.execute(
+            "INSERT INTO users (name, email, phone, password_hash, role, consent_given) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (name, email, phone, password_hash, role, consent),
+        )
+        mysql.connection.commit()
+        user_id = cursor.lastrowid
+
+        if role == "hospital":
             cursor.execute(
-                "INSERT INTO users (name, email, password) VALUES (%s, %s, %s)",
-                (name, email, password_hash),
+                "INSERT INTO hospitals (name, address, contact_email, contact_phone, admin_user_id) "
+                "VALUES (%s,%s,%s,%s,%s)",
+                (name + " Hospital", "", email, phone, user_id),
             )
             mysql.connection.commit()
 
-            flash("Registered successfully. Please log in.", "success")
-            return redirect(url_for("login"))
+        flash("Registration successful. Please log in.", "success")
+        return redirect(url_for("login"))
 
-        except Exception:
-            msg = "Error creating account. Please try again later."
-
-    return render_template("register.html", msg=msg)
+    return render_template("register.html")
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    """
-    Login using users(id, name, email, password) table.
-    """
     if request.method == "POST":
         email = request.form.get("email")
         password = request.form.get("password")
 
-        try:
-            cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
-            cursor.execute("SELECT * FROM users WHERE email=%s", (email,))
-            user = cursor.fetchone()
-        except Exception:
-            user = None
+        cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+        cursor.execute("SELECT * FROM users WHERE email=%s", (email,))
+        user = cursor.fetchone()
 
-        # verify using hash stored in `password`
-        if user and pbkdf2_sha256.verify(password, user["password"]):
+        if user and pbkdf2_sha256.verify(password, user["password_hash"]):
             session["loggedin"] = True
-            session["user_id"] = user["id"]       # matches id column
+            session["user_id"] = user["user_id"]
             session["name"] = user["name"]
-            session["role"] = "donor"             # simple default role
+            session["role"] = user["role"]
+
+            # POP ALL NOTIFICATIONS ON EVERY LOGIN (Read or Unread)
+            cursor.execute(
+                "SELECT notif_id, message FROM notifications "
+                "WHERE user_id=%s",
+                (user["user_id"],),
+            )
+            notifs = cursor.fetchall()
+            for n in notifs:
+                flash(f"Notification: {n['message']}", "info")
+            mysql.connection.commit()
 
             flash("Logged in successfully.", "success")
             return redirect(url_for("index"))
-
-        flash("Incorrect email or password.", "danger")
+        else:
+            flash("Incorrect email/password.", "danger")
 
     return render_template("login.html")
 
@@ -134,68 +137,168 @@ def logout():
 @app.route("/donor/register", methods=["GET", "POST"])
 @login_required(role="donor")
 def donor_register():
-    flash("Donor profile editing is disabled in this demo.", "info")
+    if request.method == "POST":
+        blood_type = request.form.get("blood_type")
+        organs = ",".join(request.form.getlist("organs"))
+        hla_profile = request.form.get("hla_profile")
+        availability_status = request.form.get("availability_status")
+        location = request.form.get("location")
+
+        if not blood_type or not organs:
+            flash("Blood type and at least one organ are required.", "danger")
+            return render_template("donor_register.html")
+
+        cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+        cursor.execute("SELECT * FROM donors WHERE user_id=%s", (session["user_id"],))
+        existing = cursor.fetchone()
+        if existing:
+            cursor.execute(
+                """UPDATE donors SET blood_type=%s, organs=%s, hla_profile=%s,
+                   availability_status=%s, location=%s WHERE user_id=%s""",
+                (blood_type, organs, hla_profile, availability_status, location, session["user_id"]),
+            )
+        else:
+            cursor.execute(
+                """INSERT INTO donors (user_id, blood_type, organs, hla_profile,
+                   availability_status, location)
+                   VALUES (%s,%s,%s,%s,%s,%s)""",
+                (session["user_id"], blood_type, organs, hla_profile, availability_status, location),
+            )
+        mysql.connection.commit()
+        flash("Donor profile saved.", "success")
+        return redirect(url_for("index"))
+
     return render_template("donor_register.html")
 
 
 @app.route("/donor/deactivate", methods=["POST"])
 @login_required(role="donor")
 def donor_deactivate():
-    flash("Deactivation is disabled in this demo.", "info")
+    cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+
+    # set donor inactive
+    cursor.execute(
+        "UPDATE donors SET availability_status='Inactive' WHERE user_id=%s",
+        (session["user_id"],),
+    )
+
+    # mark notifications as Read when donor is deactivated
+    cursor.execute(
+        "UPDATE notifications SET status='Read' "
+        "WHERE user_id=%s AND status='Unread'",
+        (session["user_id"],),
+    )
+
+    mysql.connection.commit()
+    flash("Your donor profile is now Inactive. Notifications cleared.", "success")
     return redirect(url_for("index"))
 
 
 @app.route("/donor/delete", methods=["POST"])
 @login_required(role="donor")
 def donor_delete_self():
-    flash("Account deletion is disabled in this demo.", "info")
+    cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    cursor.execute("DELETE FROM users WHERE user_id=%s", (session["user_id"],))
+    mysql.connection.commit()
+    session.clear()
+    flash("Your donor account has been deleted.", "success")
     return redirect(url_for("index"))
 
 
 @app.route("/donors")
 @login_required()
 def donors_list():
-    donors = []
     organ = request.args.get("organ")
     location = request.args.get("location")
 
-    try:
-        cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
-        # adjust joins only if you actually have donors/users tables with these columns
-        query = """SELECT d.*, u.name, u.email
-                   FROM donors d JOIN users u ON d.user_id = u.id
-                   WHERE d.availability_status='Active'"""
-        params = []
-        if organ:
-            query += " AND FIND_IN_SET(%s, d.organs)"
-            params.append(organ)
-        if location:
-            query += " AND d.location LIKE %s"
-            params.append("%" + location + "%")
+    cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    query = """SELECT d.*, u.name, u.email, u.phone
+               FROM donors d JOIN users u ON d.user_id = u.user_id
+               WHERE d.availability_status='Active'"""
+    params = []
+    if organ:
+        query += " AND FIND_IN_SET(%s, d.organs)"
+        params.append(organ)
+    if location:
+        query += " AND d.location LIKE %s"
+        params.append("%" + location + "%")
 
-        cursor.execute(query, tuple(params))
-        donors = cursor.fetchall()
-    except Exception:
-        flash("Database unavailable; showing empty donor list.", "info")
-
+    cursor.execute(query, tuple(params))
+    donors = cursor.fetchall()
     return render_template("donors_list.html", donors=donors, organ=organ, location=location)
 
 
-# ---------------- HOSPITAL / MATCHES (unchanged demo behaviour) ----------------
+# ---------------- HOSPITAL REQUESTS ----------------
 
 @app.route("/request/new", methods=["GET", "POST"])
 @login_required(role="hospital")
 def request_new():
-    flash("Creating new requests is disabled in this demo.", "info")
+    if request.method == "POST":
+        patient_name = request.form.get("patient_name")
+        required_organ = request.form.get("required_organ")
+        blood_type = request.form.get("blood_type")
+        hla_profile = request.form.get("hla_profile")
+        urgency_level = request.form.get("urgency_level")
+        location = request.form.get("location")
+
+        if not patient_name or not required_organ or not blood_type or not urgency_level:
+            flash("Please fill all required fields.", "danger")
+            return render_template("request_form.html")
+
+        cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+        cursor.execute("SELECT hospital_id FROM hospitals WHERE admin_user_id=%s", (session["user_id"],))
+        hospital = cursor.fetchone()
+        if not hospital:
+            flash("Hospital record not found.", "danger")
+            return render_template("request_form.html")
+
+        cursor.execute(
+            """INSERT INTO requests (hospital_id, patient_name, required_organ,
+               blood_type, hla_profile, urgency_level, status)
+               VALUES (%s,%s,%s,%s,%s,%s,'Pending')""",
+            (hospital["hospital_id"], patient_name, required_organ, blood_type, hla_profile, urgency_level),
+        )
+        mysql.connection.commit()
+        request_id = cursor.lastrowid
+
+        create_matches_for_request(request_id, location)
+        flash("Request submitted and matching started.", "success")
+        return redirect(url_for("matches_list"))
+
     return render_template("request_form.html")
 
 
+# NEW: delete request after transplant
 @app.route("/request/<int:request_id>/delete", methods=["POST"])
 @login_required(role="hospital")
 def request_delete(request_id):
-    flash("Deleting requests is disabled in this demo.", "info")
+    cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+
+    # ensure this request belongs to current hospital user
+    cursor.execute(
+        """SELECT r.request_id
+           FROM requests r
+           JOIN hospitals h ON r.hospital_id = h.hospital_id
+           WHERE r.request_id = %s AND h.admin_user_id = %s""",
+        (request_id, session["user_id"]),
+    )
+    req = cursor.fetchone()
+    if not req:
+        flash("Request not found or you are not allowed to delete it.", "danger")
+        return redirect(url_for("matches_list"))
+
+    # delete matches linked to this request
+    cursor.execute("DELETE FROM matches WHERE request_id = %s", (request_id,))
+
+    # delete the request itself
+    cursor.execute("DELETE FROM requests WHERE request_id = %s", (request_id,))
+
+    mysql.connection.commit()
+    flash(f"Request {request_id} deleted after successful transplant.", "success")
     return redirect(url_for("matches_list"))
 
+
+# ---------------- MATCHING ENGINE ----------------
 
 def compute_match_score(req, donor, req_location=None):
     score = 0.0
@@ -225,91 +328,80 @@ def compute_match_score(req, donor, req_location=None):
 
 
 def create_matches_for_request(request_id, req_location=None):
-    try:
-        cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
-        cursor.execute("SELECT * FROM requests WHERE request_id=%s", (request_id,))
-        req = cursor.fetchone()
-        if not req:
-            return
+    cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    cursor.execute("SELECT * FROM requests WHERE request_id=%s", (request_id,))
+    req = cursor.fetchone()
+    if not req:
+        return
 
-        cursor.execute(
-            """SELECT d.*, u.email, u.id AS user_id
-               FROM donors d JOIN users u ON d.user_id = u.id
-               WHERE d.availability_status='Active'"""
-        )
-        donors = cursor.fetchall()
+    cursor.execute(
+        """SELECT d.*, u.email, u.user_id
+           FROM donors d JOIN users u ON d.user_id = u.user_id
+           WHERE d.availability_status='Active'"""
+    )
+    donors = cursor.fetchall()
 
-        for donor in donors:
-            score = compute_match_score(req, donor, req_location)
-            if score >= 40:
-                cursor.execute(
-                    "INSERT INTO matches (request_id, donor_id, score, status) "
-                    "VALUES (%s,%s,%s,'Proposed')",
-                    (request_id, donor["donor_id"], score),
-                )
-                match_id = cursor.lastrowid
-                cursor.execute(
-                    "INSERT INTO notifications (user_id, match_id, type, message) "
-                    "VALUES (%s,%s,%s,%s)",
-                    (
-                        donor["user_id"],
-                        match_id,
-                        "MatchFound",
-                        f"Potential match for organ request {request_id} with score {score}",
-                    ),
-                )
+    for donor in donors:
+        score = compute_match_score(req, donor, req_location)
+        if score >= 40:
+            cursor.execute(
+                "INSERT INTO matches (request_id, donor_id, score, status) "
+                "VALUES (%s,%s,%s,'Proposed')",
+                (request_id, donor["donor_id"], score),
+            )
+            match_id = cursor.lastrowid
 
-        mysql.connection.commit()
-    except Exception:
-        pass
+            cursor.execute(
+                "INSERT INTO notifications (user_id, match_id, type, message) "
+                "VALUES (%s,%s,%s,%s)",
+                (donor["user_id"], match_id, "MatchFound",
+                 f"Potential match for organ request {request_id} with score {score}"),
+            )
 
+    mysql.connection.commit()
+
+
+# ---------------- MATCHES & NOTIFICATIONS ----------------
 
 @app.route("/matches")
 @login_required()
 def matches_list():
-    matches = []
-    notifs = []
-    unread = 0
+    cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
 
-    try:
-        cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
-
-        if session.get("role") == "hospital":
-            cursor.execute(
-                """SELECT m.*, r.patient_name, r.required_organ, d.blood_type, u.name AS donor_name
-                   FROM matches m
-                   JOIN requests r ON m.request_id = r.request_id
-                   JOIN donors d ON m.donor_id = d.donor_id
-                   JOIN users u ON d.user_id = u.id
-                   ORDER BY m.score DESC"""
-            )
-        else:
-            cursor.execute(
-                """SELECT m.*, r.patient_name, r.required_organ, d.blood_type
-                   FROM matches m
-                   JOIN donors d ON m.donor_id = d.donor_id
-                   JOIN users u ON d.user_id = u.id
-                   JOIN requests r ON m.request_id = r.request_id
-                   WHERE u.id=%s
-                   ORDER BY m.score DESC""",
-                (session["user_id"],),
-            )
-        matches = cursor.fetchall()
-
+    if session["role"] == "hospital":
         cursor.execute(
-            "SELECT * FROM notifications WHERE user_id=%s ORDER BY sent_at DESC",
+            """SELECT m.*, r.patient_name, r.required_organ, d.blood_type, u.name AS donor_name
+               FROM matches m
+               JOIN requests r ON m.request_id = r.request_id
+               JOIN donors d ON m.donor_id = d.donor_id
+               JOIN users u ON d.user_id = u.user_id
+               ORDER BY m.score DESC"""
+        )
+    else:
+        cursor.execute(
+            """SELECT m.*, r.patient_name, r.required_organ, d.blood_type
+               FROM matches m
+               JOIN donors d ON m.donor_id = d.donor_id
+               JOIN users u ON d.user_id = u.user_id
+               JOIN requests r ON m.request_id = r.request_id
+               WHERE u.user_id=%s
+               ORDER BY m.score DESC""",
             (session["user_id"],),
         )
-        notifs = cursor.fetchall()
+    matches = cursor.fetchall()
 
-        cursor.execute(
-            "SELECT COUNT(*) AS unread_count FROM notifications "
-            "WHERE user_id=%s AND status='Unread'",
-            (session["user_id"],),
-        )
-        unread = cursor.fetchone()["unread_count"]
-    except Exception:
-        flash("Database unavailable; matches and notifications are empty.", "info")
+    cursor.execute(
+        "SELECT * FROM notifications WHERE user_id=%s ORDER BY sent_at DESC",
+        (session["user_id"],),
+    )
+    notifs = cursor.fetchall()
+
+    cursor.execute(
+        "SELECT COUNT(*) AS unread_count FROM notifications "
+        "WHERE user_id=%s AND status='Unread'",
+        (session["user_id"],),
+    )
+    unread = cursor.fetchone()["unread_count"]
 
     return render_template(
         "matches.html",
