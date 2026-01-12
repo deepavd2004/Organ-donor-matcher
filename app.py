@@ -43,18 +43,63 @@ def index():
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
-    # On Render demo: show message and disable real registration
-    flash("Registration is disabled in the online demo (no database).", "info")
-    return render_template("register.html")
-    # For full DB version, restore your original register() code.
+    msg = ""
+    if request.method == "POST":
+        # field names must match your register.html form
+        name = request.form.get("full_name") or request.form.get("name")
+        email = request.form.get("email")
+        phone = request.form.get("phone")
+        password = request.form.get("password")
+        confirm = request.form.get("confirm_password")
+
+        # basic validation
+        if not name or not email or not password or not confirm:
+            msg = "Please fill out all required fields."
+            return render_template("register.html", msg=msg)
+
+        if password != confirm:
+            msg = "Passwords do not match."
+            return render_template("register.html", msg=msg)
+
+        if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+            msg = "Invalid email address."
+            return render_template("register.html", msg=msg)
+
+        try:
+            cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+
+            # check if email already exists
+            cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
+            account = cursor.fetchone()
+            if account:
+                msg = "Account already exists with this email."
+                return render_template("register.html", msg=msg)
+
+            # hash password and insert; adjust column names if your table differs
+            password_hash = pbkdf2_sha256.hash(password)
+            cursor.execute(
+                """
+                INSERT INTO users (name, email, phone, password_hash, role)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (name, email, phone, password_hash, "donor"),
+            )
+            mysql.connection.commit()
+            flash("Registered successfully. Please log in.", "success")
+            return redirect(url_for("login"))
+
+        except Exception:
+            msg = "Error creating account. Please try again later."
+
+    return render_template("register.html", msg=msg)
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     """
-    Demo-friendly login:
-    - If DB works, use real users table.
-    - If DB is not reachable, fall back to a simple demo user.
+    Login:
+    - Tries real DB users table first.
+    - Keeps fallback demo user if DB unreachable.
     """
     if request.method == "POST":
         email = request.form.get("email")
@@ -67,12 +112,12 @@ def login():
         except Exception:
             user = None
 
-        # Attempt real DB login first
+        # real DB login
         if user and pbkdf2_sha256.verify(password, user["password_hash"]):
             session["loggedin"] = True
             session["user_id"] = user["user_id"]
             session["name"] = user["name"]
-            session["role"] = user["role"]
+            session["role"] = user.get("role", "donor")
 
             try:
                 cursor.execute(
@@ -89,7 +134,7 @@ def login():
             flash("Logged in successfully.", "success")
             return redirect(url_for("index"))
 
-        # Fallback demo login (no DB)
+        # fallback demo login (optional – you can remove this block)
         if email == "demo@example.com" and password == "demo123":
             session["loggedin"] = True
             session["user_id"] = 1
@@ -136,7 +181,6 @@ def donor_delete_self():
 @app.route("/donors")
 @login_required()
 def donors_list():
-    # Safe demo: try DB, else show empty list
     donors = []
     organ = request.args.get("organ")
     location = request.args.get("location")
@@ -157,7 +201,7 @@ def donors_list():
         cursor.execute(query, tuple(params))
         donors = cursor.fetchall()
     except Exception:
-        flash("Database unavailable in demo; showing empty donor list.", "info")
+        flash("Database unavailable; showing empty donor list.", "info")
 
     return render_template("donors_list.html", donors=donors, organ=organ, location=location)
 
@@ -208,7 +252,6 @@ def compute_match_score(req, donor, req_location=None):
 
 
 def create_matches_for_request(request_id, req_location=None):
-    # Kept for completeness; not used in demo because /request/new is disabled
     try:
         cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
         cursor.execute("SELECT * FROM requests WHERE request_id=%s", (request_id,))
@@ -293,7 +336,7 @@ def matches_list():
         )
         unread = cursor.fetchone()["unread_count"]
     except Exception:
-        flash("Database unavailable in demo; matches and notifications are empty.", "info")
+        flash("Database unavailable; matches and notifications are empty.", "info")
 
     return render_template(
         "matches.html",
